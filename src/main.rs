@@ -16,8 +16,11 @@ fn main() {
         .add_startup_system(setup.system())
         .add_startup_stage("player", SystemStage::single(spawn_player.system()))
         .add_startup_stage("balls", SystemStage::single(spawn_balls.system()))
+        .add_event::<BallCollision>()
         .add_system(player_movement.system())
         .add_system(ball_movement.system())
+        .add_system(ball_collision_detection.system())
+        .add_system(ball_collision.system())
         .add_plugins(DefaultPlugins)
         .add_plugin(ShapePlugin)
         .run();
@@ -56,7 +59,7 @@ fn create_ball(pos: Vec2, line_color: Color, fill_color: Color) -> ShapeBundle {
         },
         trans,
     );
-}
+ }
 
 fn spawn_player(mut commands: Commands){
     commands
@@ -85,11 +88,11 @@ fn spawn_balls(
 }
 
 fn ball_movement(
-    mut query: Query<(&mut Transform, &mut Velocity, With<Ball>)>,
+    mut query: Query<(&mut Transform, &mut Velocity), With<Ball>>,
     time: Res<Time>,
     win_size: Res<WinSize>,
 ) {
-    for (mut transform, mut velocity, _) in query.iter_mut() {
+    for (mut transform, mut velocity) in query.iter_mut() {
         let vel = &mut velocity.0;
         let pos = &mut transform.translation;
         let w = win_size.0;
@@ -108,13 +111,79 @@ fn ball_movement(
 
 fn player_movement(
     keyboard_input: Res<Input<KeyCode>>,
-    mut query: Query<(&mut Velocity, With<Player>)>,
+    mut query: Query<&mut Velocity, With<Player>>,
 ) {
-    for (mut velocity, _) in query.iter_mut() {
+    for mut velocity in query.iter_mut() {
         let vel = &mut velocity.0;
         if keyboard_input.pressed(KeyCode::S) { vel.y -= ACCELERATE }
         if keyboard_input.pressed(KeyCode::W) { vel.y += ACCELERATE }
         if keyboard_input.pressed(KeyCode::A) { vel.x -= ACCELERATE }
         if keyboard_input.pressed(KeyCode::D) { vel.x += ACCELERATE }
+    }
+}
+
+#[allow(unused)]
+struct BallCollision {
+    ent_a: Entity, pos_a: Vec2,
+    ent_b: Entity, pos_b: Vec2,
+    is_collided: bool, angle: f32,
+}
+impl BallCollision {
+    pub fn new(ent_a: Entity, pos_a: Vec2, radius_a: f32, ent_b: Entity, pos_b: Vec2, radius_b: f32) -> BallCollision {
+        let dx = pos_b.x - pos_a.x;
+        let dy = pos_b.y - pos_a.y;
+        let ar = radius_a + radius_b;
+        let is_collided = (dx*dx + dy*dy) < (ar*ar);
+
+        let mut angle = 0.;
+        if is_collided {
+            angle = dx.atan2(dy);
+        }
+
+        BallCollision {
+            ent_a: ent_a, pos_a: pos_a,
+            ent_b: ent_b, pos_b: pos_b,
+            is_collided: is_collided, angle: angle,
+        }
+    }
+}
+
+
+fn ball_collision_detection(
+    queries: QuerySet<(Query<(Entity, &Transform), With<Ball>>,
+                           Query<(Entity, &Transform), With<Ball>>)>,
+    mut ev_collision: EventWriter<BallCollision>,
+) {
+
+    for (e0, t0) in queries.q0().iter() {
+        for (e1, t1) in queries.q1().iter() {
+            if e0 == e1 {continue;}
+
+            let bc = BallCollision::new(
+                e0, t0.translation.truncate(), C_RADIUS,
+                e1, t1.translation.truncate(), C_RADIUS
+            );
+            if bc.is_collided {
+                ev_collision.send(bc);
+            }
+        }
+    }
+}
+
+fn ball_collision(
+    mut ev_collision: EventReader<BallCollision>,
+    mut query: Query<(Entity, &mut Velocity), With<Ball>>,
+) {
+    for ev in ev_collision.iter() {
+        let dist_a: f32;
+        let dist_b: f32;
+        if let Ok((_, velocity)) = query.get_mut(ev.ent_a) {
+            dist_a = velocity.0.length();
+        } else {return};
+        if let Ok((_, mut velocity)) = query.get_mut(ev.ent_b) {
+            dist_b = velocity.0.length();
+            velocity.0.x = ev.angle.sin() * (dist_a + dist_b) * 0.5;
+            velocity.0.y = ev.angle.cos() * (dist_a + dist_b) * 0.5;
+        }
     }
 }
